@@ -1,0 +1,221 @@
+---
+title: "Equine OA Proteomics Data Analysis"
+subtitle: "Plasma Samples"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.align = "center",
+  dpi = 300
+)
+```
+
+```{r, include = FALSE}
+library(limpa)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(kableExtra)
+library(viridis)
+library(ggrepel)
+library(ComplexHeatmap)
+```
+
+# Methods
+Peptide-level data were exported as a BGS Factory Report from Spectronaut Viewer, version 20.4.260109.92449, using default settings. 
+
+The Bioconductor package limpa [1, 2], version `r sessionInfo()$otherPkgs$limpa$Version` was used to quantify data at the protein level and conduct differential expression analyses.  The differential expression models included condition (healthy vs. OA), age, sex, and breed.  Analyses were conducted using `r sessionInfo()$R.version$version.string` [3].
+
+1. Li M, Cobbold SA, Smyth GK (2025). “Quantification and differential analysis of mass spectrometry proteomics data with probabilistic recovery of information from missing values.” bioRxiv, April 29, 651125. doi:10.1101/2025.04.28.651125.
+
+2. Li M, Smyth GK (2023). “Neither random nor censored: estimating intensity-dependent probabilities for missing values in label-free proteomics.” Bioinformatics, 39(5), btad200. doi:10.1093/bioinformatics/btad200.
+
+3. R Core Team (2025). _R: A Language and Environment for Statistical Computing_. R Foundation for Statistical Computing, Vienna, Austria. <https://www.R-project.org/>.
+
+```{r}
+file.use <- "20260206_134557_SpN_Reesink_120EqCabalLaminSyFl_iun25_Report.tsv"
+pdata.file <- "2026.02.05 Peralta AAEP Metadata_combined v2.xlsx"
+```
+
+> **Input files:** Place the Spectronaut TSV report and metadata workbook in the
+> working directory before knitting. These source data are not included in this
+> repository; see `README.md` for details.
+
+Peptide data were read from the file `r file.use` and sample information was read from the file `r pdata.file`.
+
+```{r, include = FALSE}
+# read in metadata
+pdata <- as.data.frame(read_excel(pdata.file))
+pdata$Joint <- ifelse(pdata$Joint == "Feltock", "Fetlock", pdata$Joint)
+pdata$`Proteomics Batch` <- factor(pdata$`Proteomics Batch`)
+
+# Subset to plasma
+#pdata <- subset(pdata, Fluid == "Plasma")
+```
+
+Only plasma samples were included in this analysis.
+
+```{r, include = FALSE}
+y.peptide <- readSpectronaut(file = file.use, run.column = "R.FileName", extra.columns = c("PG.ProteinAccessions", "PG.ProteinDescriptions"), q.cutoffs = rep(0.01, 2))
+
+```
+
+```{r, include = FALSE}
+y.peptide <- filterCompoundProteins(y.peptide, protein.group = "PG.ProteinAccessions")
+y.peptide <- filterSingletonPeptides(y.peptide, min.n.peptides = 2, protein.group = "PG.ProteinAccessions")
+dpcfit <- dpc(y.peptide)
+y.protein <- dpcQuant(y.peptide, "PG.ProteinAccessions", dpc = dpcfit)
+```
+
+```{r}
+drop <- grep("Cont_", rownames(y.protein))
+y.protein <- y.protein[-drop,]
+```
+
+```{r}
+protein_data <- as.data.frame(t(y.protein$E[c(
+  "F7DMX6",
+  "F7DNT0",
+  "A0A3Q2HWB5",
+  "A0A3Q2H908"
+), ]))
+
+protein_data$`Proteomics Tube #` <- as.numeric(
+  sub(".*_60spd_([0-9]+)_.*", "\\1", rownames(protein_data))
+)
+
+protein_data <- merge(
+  pdata,
+  protein_data,
+  by = "Proteomics Tube #"
+)
+write.csv(
+  protein_data,
+  "figure1c_data.csv",
+  row.names = FALSE
+)
+```
+
+# Results
+After removing contaminant proteins, `r nrow(y.protein)` proteins were present in the data.
+
+## Multidimensional scaling plots
+Multidimensional scaling (MDS) plots are a two dimensional representation of the relative distances between protein profiles from each sample.
+
+```{r}
+coords <- plotMDSUsingSEs(y.protein, plot = FALSE)
+plotdat <- pdata
+plotdat$`MDS dim 1` <- coords$x
+plotdat$`MDS dim 2` <- coords$y
+```
+
+#### MDS plot by healthy/OA
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Healthy vs OA`)) + geom_point(size = 3) + theme_bw()
+```
+
+#### MDS plot by age
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Age (years)`)) + geom_point(size = 3) + theme_bw() + scale_color_viridis(option = "magma")
+```
+
+#### MDS plot by sex
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = Sex)) + geom_point(size = 3) + theme_bw()
+```
+
+#### MDS plot by breed
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Breed 2`)) + geom_point(size = 3) + theme_bw() + labs(color = "Breed")
+```
+
+## Differential expression
+Output includes the following columns:
+
+* NPeptides: Number of peptides 
+
+* PropObs: Average proportion of peptides detected
+
+* logFC: log2 fold change, with the group listed first in the comparison or file name being the numerator of the fold change
+
+* t: t statistic, i.e. log fold change divided by its standard error
+
+* P.Value: Raw p-value for the test that the log fold change differs from 0
+
+* adj.P.Val: Benjamini-Hochberg false discovery rate adjusted p-value
+
+```{r, include = FALSE}
+design <- model.matrix(~`Healthy vs OA` + `Age (years)` + Sex + `Breed 2`, data = pdata)
+fit <- dpcDE(y.protein, design, plot = FALSE)
+fit <- eBayes(fit)
+```
+
+### OA vs. healthy
+```{r}
+contrast <- "OA - healthy"
+####
+tab0 <- topTable(fit, coef = 2, n = Inf, sort.by = "P")
+tab0$PG.ProteinAccessions <- rownames(tab0)
+tab0 <- select(tab0, -B, -AveExpr)
+tab0 <- select(tab0, PG.ProteinAccessions, NPeptides:adj.P.Val, PG.ProteinDescriptions)
+filename <- gsub(" - ", "_v_", contrast)
+filename <- gsub(", ", "_", filename)
+filename <- paste0(filename, "_plasma.txt")
+write.table(tab0, file = filename, quote = FALSE, sep = "\t", row.names = FALSE)
+tab <- kable(head(tab0, 100), digits = 5, row.names = FALSE)
+header1 <- header2 <- header3 <- ncol(tab0)
+names(header1) <- paste0("Top 100 proteins for ", contrast)
+names(header2) <- paste0("Number of proteins with adjusted P < 0.05 = ", length(which(tab0$adj.P.Val < 0.05)))
+names(header3) <- paste0("Output file is ", filename)
+tab <- tab %>% add_header_above(header3, align = 'l') %>% add_header_above(header2, align = 'l') %>% add_header_above(header1, align = 'l', font_size = "larger", bold = T)
+tab %>% kable_styling() %>% scroll_box(height = "500px")
+```
+
+#### Heatmap of top 20 proteins, `r contrast`
+```{r, fig.width =10, fig.height = 8}
+tmp <- as.data.frame(y.protein$E, check.names = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+plotdat <- as.matrix(tmp[proteins.use,])
+rownames <- tab0$PG.ProteinDescriptions[1:20]
+condition.pal <- c("blue4", "orange")
+names(condition.pal) <- c("Healthy", "OA")
+ha <- columnAnnotation(Condition = pdata$`Healthy vs OA`, col = list(Condition = condition.pal), annotation_name_side = "left")
+ht <- Heatmap(plotdat, bottom_annotation = ha, name = "log2\nNormalized\nExpression", row_labels = rownames, show_column_names = FALSE, row_names_max_width = unit(12, "cm"))
+draw(ht, annotation_legend_side = "bottom")
+```
+
+#### Volcano plot for `r contrast`
+```{r}
+plotdat <- tab0
+plotdat$Category <- "Not significant"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC > 0] <- "Upregulated"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC < 0] <- "Downregulated"
+plotdat$Category <- factor(plotdat$Category, levels = c("Upregulated", "Downregulated", "Not significant"))
+labeldat <- plotdat[1:5,]
+ggplot(plotdat, aes(x = logFC, y = -log10(P.Value), color = Category)) + geom_point(show.legend = TRUE) + geom_text_repel(data = labeldat, aes(label = PG.ProteinDescriptions), color = "black") + scale_color_manual(values = c("blue", "red", "grey"), breaks = levels(plotdat$Category), drop = FALSE) + labs(color = NULL) + theme_bw()
+```
+
+#### Boxplots of top 10 proteins for `r contrast`
+```{r}
+proteins.use <- tab0$PG.ProteinAccessions[1:10]
+labels <- tab0$PG.ProteinDescriptions[1:10]
+names(labels) <- proteins.use
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  plotdat$y <- as.numeric(y.protein$E[prot,])
+  p <- ggplot(plotdat, aes(x = `Healthy vs OA`, y = y, fill = `Healthy vs OA`)) + geom_boxplot() + labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot]) + theme_bw() + theme(legend.position = "none")
+  print(p)
+})
+```
+
+#### R session information
+```{r}
+sessionInfo()
+```

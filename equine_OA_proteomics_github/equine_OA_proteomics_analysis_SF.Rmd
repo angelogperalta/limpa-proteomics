@@ -1,0 +1,1069 @@
+---
+title: "Equine OA Proteomics Data Analysis"
+subtitle: "Synovial Fluid Samples"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.align = "center",
+  dpi = 300
+)
+```
+
+```{r, include = FALSE}
+library(limpa)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(kableExtra)
+library(viridis)
+library(ggrepel)
+library(ComplexHeatmap)
+library(ggpubr)
+```
+
+# Methods
+Peptide-level data were exported as a BGS Factory Report from Spectronaut Viewer, version 20.4.260109.92449, using default settings. 
+
+The Bioconductor package limpa [1, 2], version `r sessionInfo()$otherPkgs$limpa$Version` was used to quantify data at the protein level and conduct differential expression analyses.  The differential expression models included condition (healthy vs. OA), joint, the condition-joint interaction, age, sex, breed, and proteomics batch.  Analyses were conducted using `r sessionInfo()$R.version$version.string` [3].
+
+1. Li M, Cobbold SA, Smyth GK (2025). “Quantification and differential analysis of mass spectrometry proteomics data with probabilistic recovery of information from missing values.” bioRxiv, April 29, 651125. doi:10.1101/2025.04.28.651125.
+
+2. Li M, Smyth GK (2023). “Neither random nor censored: estimating intensity-dependent probabilities for missing values in label-free proteomics.” Bioinformatics, 39(5), btad200. doi:10.1093/bioinformatics/btad200.
+
+3. R Core Team (2025). _R: A Language and Environment for Statistical Computing_. R Foundation for Statistical Computing, Vienna, Austria. <https://www.R-project.org/>.
+
+```{r}
+file.use <- "20260206_134557_SpN_Reesink_120EqCabalLaminSyFl_iun25_Report.tsv"
+pdata.file <- "2026.02.05 Peralta AAEP Metadata_combined v2.xlsx"
+```
+
+> **Input files:** Place the Spectronaut TSV report and metadata workbook in the
+> working directory before knitting. These source data are not included in this
+> repository; see `README.md` for details.
+
+Peptide data were read from the file `r file.use` and sample information was read from the file `r pdata.file`.
+
+```{r, include = FALSE}
+# read in metadata
+pdata <- as.data.frame(read_excel(pdata.file))
+pdata$Joint <- ifelse(pdata$Joint == "Feltock", "Fetlock", pdata$Joint)
+pdata$`Proteomics Batch` <- factor(pdata$`Proteomics Batch`)
+pdata$Group <- interaction(pdata$`Healthy vs OA`, pdata$Fluid)
+
+# Subset to fetlock and carpus samples
+pdata <- subset(pdata, Fluid != "Plasma")
+```
+
+Only fetlock and carpus samples were included in this analysis.
+
+```{r, include = FALSE}
+y.peptide <- readSpectronaut(file = file.use, run.column = "R.FileName", extra.columns = c("PG.ProteinAccessions", "PG.ProteinDescriptions"), q.cutoffs = rep(0.01, 2))
+
+# Subset to fetlock and carpus samples
+sample.names <- sapply(strsplit(colnames(y.peptide), split = "_"), `[`, 4)
+colnames(y.peptide) <- sample.names
+y.peptide <- y.peptide[,as.character(pdata$`Proteomics Tube #`)]
+```
+
+```{r, include = FALSE}
+y.peptide <- filterCompoundProteins(y.peptide, protein.group = "PG.ProteinAccessions")
+y.peptide <- filterSingletonPeptides(y.peptide, min.n.peptides = 2, protein.group = "PG.ProteinAccessions")
+dpcfit <- dpc(y.peptide)
+y.protein <- dpcQuant(y.peptide, "PG.ProteinAccessions", dpc = dpcfit)
+```
+
+```{r}
+drop <- grep("Cont_", rownames(y.protein))
+y.protein <- y.protein[-drop,]
+```
+
+# Results
+After removing contaminant proteins, `r nrow(y.protein)` proteins were present in the data.
+
+
+## Boxplots of protein profiles by group
+Each box is a sample
+```{r, fig.height = 6, dpi = 300}
+boxplot(y.protein$E, col = as.numeric(factor(pdata$Group)) + 1)
+legend("topleft", legend = levels(factor(pdata$Group)), fill = 2:5, cex = 0.5, horiz = TRUE)
+```
+
+## Multidimensional scaling plots
+Multidimensional scaling (MDS) plots are a two dimensional representation of the relative distances between protein profiles from each sample.
+
+```{r}
+coords <- plotMDSUsingSEs(y.protein, plot = FALSE)
+plotdat <- pdata
+plotdat$`MDS dim 1` <- coords$x
+plotdat$`MDS dim 2` <- coords$y
+```
+
+#### MDS plot by healthy/OA and joint
+```{r}
+ggplot(
+    plotdat,
+    aes(
+        x = `MDS dim 1`,
+        y = `MDS dim 2`,
+        color = `Healthy vs OA`
+    )
+) +
+    stat_ellipse(
+        aes(
+            group = `Healthy vs OA`,
+            fill = `Healthy vs OA`
+        ),
+        geom = "polygon",
+        alpha = 0.2,
+        linewidth = 1
+    ) +
+    geom_point(aes(fill=`Healthy vs OA`),shape = 21,color = "black", size = 3.5) +
+    theme_linedraw() +
+    theme(
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(face = "bold", size = 30),
+        axis.title.x = element_text(size = 26),
+        axis.title.y = element_text(size = 26),
+        axis.text.x = element_text(size = 24),
+        axis.text.y = element_text(size = 24),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(family = "Arial"),
+        legend.position = "none"
+    ) +
+    scale_color_manual(
+        values = c(
+            "Healthy" = "#0072B5",
+            "OA" = "#BC3C29"
+        )
+    ) +
+    scale_fill_manual(
+        values = c(
+            "Healthy" = "#0072B5",
+            "OA" = "#BC3C29"
+        )
+    ) +
+    labs(title = "All Synovial Fluid")
+
+ggsave("sf_mds.svg", width = 8, height = 6, device = "svg")
+```
+
+#### MDS plot by healthy/OA and joint
+```{r}
+ggplot(
+    plotdat,
+    aes(
+        x = `MDS dim 1`,
+        y = `MDS dim 2`,
+        color = Joint
+    )
+) +
+    stat_ellipse(
+        aes(
+            group = Joint,
+            fill = Joint
+        ),
+        geom = "polygon",
+        alpha = 0.2,
+        linewidth = 1
+    ) +
+    geom_point(aes(fill=Joint),shape = 21,color = "black", size = 3.5) +
+    theme_linedraw() +
+    theme(
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(face = "bold", size = 30),
+        axis.title.x = element_text(size = 26),
+        axis.title.y = element_text(size = 26),
+        axis.text.x = element_text(size = 22),
+        axis.text.y = element_text(size = 22),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(family = "Arial"),
+        legend.position = "none"
+    ) +
+    scale_color_manual(
+        values = c(
+            "Fetlock" = "forestgreen",
+            "Carpus" = "orange2"
+        )
+    ) +
+    scale_fill_manual(
+        values = c(
+            "Fetlock" = "forestgreen",
+            "Carpus" = "orange2"
+        )
+    ) +
+    labs(title = "Carpal vs Fetlock Synovial Fluid")
+
+ggsave("joint_mds.svg", width = 8, height = 6, device = "svg")
+```
+
+
+#### MDS plot by age
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Age (years)`)) + geom_point(size = 3.5) + scale_color_viridis(option = "magma") + theme_linedraw() +
+    theme(legend.title = element_text(size = 17),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(face = "bold", size = 22),
+          axis.title.x = element_text(size = 17),
+          axis.title.y = element_text(size = 17),
+          axis.text.x = element_text(size = 15),
+          axis.text.y = element_text(size = 15),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+```
+
+#### MDS plot by sex
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = Sex)) + geom_point(size = 3.5) + theme_linedraw() +
+    theme(legend.title = element_text(size = 17),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(face = "bold", size = 22),
+          axis.title.x = element_text(size = 17),
+          axis.title.y = element_text(size = 17),
+          axis.text.x = element_text(size = 15),
+          axis.text.y = element_text(size = 15),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+```
+
+#### MDS plot by breed
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Breed 2`)) + geom_point(size = 3.5) + theme_linedraw() +
+    theme(legend.title = element_text(size = 17),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(face = "bold", size = 22),
+          axis.title.x = element_text(size = 17),
+          axis.title.y = element_text(size = 17),
+          axis.text.x = element_text(size = 15),
+          axis.text.y = element_text(size = 15),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) + labs(color = "Breed")
+```
+
+#### MDS plot by batch
+```{r}
+ggplot(plotdat, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Proteomics Batch`)) + geom_point(size = 3) + theme_bw() + labs(color = "Batch")
+```
+```{r}
+plotdat.carpus <- subset(plotdat, Joint == "Carpus")
+
+ggplot(plotdat.carpus, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Healthy vs OA`)) + stat_ellipse(aes(group = `Healthy vs OA`, fill = `Healthy vs OA`), geom = "polygon", alpha = 0.2, linewidth = 1) +
+    geom_point(aes(fill=`Healthy vs OA`),shape = 21,color = "black", size = 3.5) +
+    theme_linedraw() +
+    theme(
+          legend.title = element_blank(),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(face = "bold", size = 30),
+          axis.title.x = element_text(size = 26),
+          axis.title.y = element_text(size = 26),
+          axis.text.x = element_text(size = 22),
+          axis.text.y = element_text(size = 22),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          text = element_text(family = "Arial"),
+          legend.position = "none") +
+    scale_color_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + labs(title = "Carpal Synovial Fluid")
+ggsave("carpus_mds.svg", width = 8, height = 6, device = "svg")
+```
+
+
+```{r}
+plotdat.fetlock <- subset(plotdat, Joint == "Fetlock")
+
+ggplot(plotdat.fetlock, aes(x = `MDS dim 1`, y = `MDS dim 2`, color = `Healthy vs OA`)) + stat_ellipse(aes(group = `Healthy vs OA`, fill = `Healthy vs OA`), geom = "polygon", alpha = 0.2, linewidth = 1) +
+    geom_point(aes(fill=`Healthy vs OA`),shape = 21,color = "black", size = 3.5) +
+    theme_linedraw() +
+    theme(
+          legend.title = element_blank(),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(face = "bold", size = 30),
+          axis.title.x = element_text(size = 26),
+          axis.title.y = element_text(size = 26),
+          axis.text.x = element_text(size = 22),
+          axis.text.y = element_text(size = 22),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          text = element_text(family = "Arial"),
+          legend.position = "none") +
+    scale_color_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + labs(title = "Fetlock Synovial Fluid")
+ggsave("fetlock_mds.svg", width = 8, height = 6, device = "svg")
+```
+## Differential expression
+Output includes the following columns:
+
+* NPeptides: Number of peptides 
+
+* PropObs: Average proportion of peptides detected
+
+* logFC: log2 fold change, with the group listed first in the comparison or file name being the numerator of the fold change
+
+* t: t statistic, i.e. log fold change divided by its standard error
+
+* P.Value: Raw p-value for the test that the log fold change differs from 0
+
+* adj.P.Val: Benjamini-Hochberg false discovery rate adjusted p-value
+
+```{r, include = FALSE}
+design <- model.matrix(~`Healthy vs OA`*Joint + `Age (years)` + Sex + `Breed 2` + `Proteomics Batch`, data = pdata)
+fit <- dpcDE(y.protein, design, plot = FALSE)
+fit <- eBayes(fit)
+```
+
+```{r}
+fit_by_fluid <- function(fluid.name) {
+  keep <- pdata$Fluid == fluid.name
+  pdata.sub <- pdata[keep, ]
+  y.protein.sub <- y.protein[, keep]
+
+  design.sub <- model.matrix(~`Healthy vs OA` + `Age (years)` + Sex + `Breed 2`,
+                              data = pdata.sub)
+  fit.sub <- dpcDE(y.protein.sub, design.sub, plot = FALSE)
+  fit.sub <- eBayes(fit.sub)
+
+  tab.sub <- topTable(fit.sub, coef = 2, n = Inf)
+  tab.sub$PG.ProteinAccessions <- rownames(tab.sub)
+  tab.sub
+}
+
+df_carpus  <- fit_by_fluid("Carpal")
+df_fetlock <- fit_by_fluid("Fetlock")
+df_plasma  <- fit_by_fluid("Plasma")
+```
+
+```{r}
+dir.create("carpus_plasma_boxplots_svg",showWarnings=FALSE)
+
+proteins.use <- c("F7DMX6","F7DNT0","A0A3Q2HWB5","A0A3Q2H908")
+
+get_label <- function(prot) {
+  for (df in list(df_carpus,df_plasma)) {
+    idx <- match(prot,df$PG.ProteinAccessions)
+    if (!is.na(idx)) return(df$PG.ProteinDescriptions[idx])
+  }
+  prot
+}
+labels <- sapply(proteins.use,get_label)
+names(labels) <- proteins.use
+
+p_to_stars <- function(p) {
+  if (length(p)==0 || is.na(p)) return("ns")
+  if (p<0.001) "****" else if (p<0.01) "***" else if (p<0.05) "**" else if (p<0.1) "*" else "ns"
+}
+
+get_pval <- function(df,prot) {
+  idx <- match(prot,df$PG.ProteinAccessions)
+  if (is.na(idx)) NA_real_ else df$P.Value[idx]
+}
+
+fluid.levels <- c("Carpal","Plasma")
+dodge.w <- 0.7
+half <- dodge.w/4
+plots <- list()
+
+for (prot in proteins.use) {
+  keep <- pdata$Fluid %in% fluid.levels
+  plotdat <- pdata[keep,]
+  plotdat$y <- as.numeric(y.protein$E[prot,keep])
+  plotdat$Fluid <- factor(plotdat$Fluid,levels=fluid.levels)
+
+  sig.carpus <- p_to_stars(get_pval(df_carpus,prot))
+  sig.plasma <- p_to_stars(get_pval(df_plasma,prot))
+
+  y.range <- diff(range(plotdat$y,na.rm=TRUE))
+  y.pos <- max(plotdat$y,na.rm=TRUE)+0.08*y.range
+  tick <- 0.02*y.range
+  x.center <- seq_along(fluid.levels)
+  sig.labels <- c(sig.carpus,sig.plasma)
+
+  bracket.df <- data.frame(x=x.center-half,xend=x.center+half,y=y.pos,yend=y.pos)
+  tickL.df <- data.frame(x=x.center-half,xend=x.center-half,y=y.pos,yend=y.pos-tick)
+  tickR.df <- data.frame(x=x.center+half,xend=x.center+half,y=y.pos,yend=y.pos-tick)
+  label.df <- data.frame(x=x.center,y=y.pos+tick,label=sig.labels)
+
+  p <- ggplot(plotdat,aes(x=Fluid,y=y,fill=`Healthy vs OA`)) +
+    geom_boxplot(width=0.6,position=position_dodge(width=dodge.w)) +
+    geom_segment(data=bracket.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_segment(data=tickL.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_segment(data=tickR.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_text(data=label.df,aes(x=x,y=y,label=label),inherit.aes=FALSE,size=6) +
+    scale_y_continuous(expand=expansion(mult=c(0.05,0.15))) +
+    labs(x=NULL,y="log2 Normalized Expression",title=labels[prot],fill=NULL) +
+    theme_linedraw() +
+    theme(plot.title=element_text(face="bold",size=22),
+          axis.title.x=element_text(size=19),axis.title.y=element_text(size=19),
+          axis.text.x=element_text(size=17),axis.text.y=element_text(size=17),
+          panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+          legend.text=element_text(size=19),legend.title=element_text(size=19),
+          legend.key.size=unit(1.2,"cm")) +
+    scale_fill_manual(values=c("Healthy"="#0072B5","OA"="#BC3C29"))+
+    scale_x_discrete(labels=c("Carpal"="Carpus","Plasma"="Plasma"))
+
+  plots[[prot]] <- p
+  print(p)
+  ggsave(paste0("carpus_plasma_boxplots_svg/",prot,".svg"),plot=p,device="svg",width=8,height=6)
+}
+```
+```{r}
+dir.create("carpus_only_boxplots_svg",showWarnings=FALSE)
+
+proteins.use <- c("F7DMX6","F7DNT0","A0A3Q2HWB5","A0A3Q2H908")
+
+get_label <- function(prot) {
+  idx <- match(prot,df_carpus$PG.ProteinAccessions)
+  if (!is.na(idx)) df_carpus$PG.ProteinDescriptions[idx] else prot
+}
+labels <- sapply(proteins.use,get_label)
+names(labels) <- proteins.use
+
+p_to_stars <- function(p) {
+  if (length(p)==0 || is.na(p)) return("ns")
+  if (p<0.001) "****" else if (p<0.01) "***" else if (p<0.05) "**" else if (p<0.1) "*" else "ns"
+}
+
+get_pval <- function(df,prot) {
+  idx <- match(prot,df$PG.ProteinAccessions)
+  if (is.na(idx)) NA_real_ else df$P.Value[idx]
+}
+
+plots <- list()
+
+for (prot in proteins.use) {
+  keep <- pdata$Fluid=="Carpal"
+  plotdat <- pdata[keep,]
+  plotdat$y <- as.numeric(y.protein$E[prot,keep])
+
+  sig.carpus <- p_to_stars(get_pval(df_carpus,prot))
+
+  y.range <- diff(range(plotdat$y,na.rm=TRUE))
+  y.pos <- max(plotdat$y,na.rm=TRUE)+0.08*y.range
+  tick <- 0.02*y.range
+
+  bracket.df <- data.frame(x=0.75,xend=1.25,y=y.pos,yend=y.pos)
+  tickL.df <- data.frame(x=0.75,xend=0.75,y=y.pos,yend=y.pos-tick)
+  tickR.df <- data.frame(x=1.25,xend=1.25,y=y.pos,yend=y.pos-tick)
+  label.df <- data.frame(x=1,y=y.pos+tick,label=sig.carpus)
+
+  p <- ggplot(plotdat,aes(x=1,y=y,fill=`Healthy vs OA`)) +
+    geom_boxplot(width=0.6,position=position_dodge(width=0.7)) +
+    geom_segment(data=bracket.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_segment(data=tickL.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_segment(data=tickR.df,aes(x=x,xend=xend,y=y,yend=yend),inherit.aes=FALSE) +
+    geom_text(data=label.df,aes(x=x,y=y,label=label),inherit.aes=FALSE,size=6) +
+    scale_x_continuous(breaks=1,labels="Carpus") +
+    scale_y_continuous(expand=expansion(mult=c(0.05,0.15))) +
+    labs(x=NULL,y="log2 Normalized Expression",title=labels[prot],fill=NULL) +
+    theme_linedraw() +
+    theme(plot.title=element_text(face="bold",size=22),
+          axis.title.x=element_text(size=19),axis.title.y=element_text(size=19),
+          axis.text.x=element_text(size=17),axis.text.y=element_text(size=17),
+          panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+          legend.text=element_text(size=19),legend.title=element_text(size=19),
+          legend.key.size=unit(1.2,"cm")) +
+    scale_fill_manual(values=c("Healthy"="#0072B5","OA"="#BC3C29"))
+
+  plots[[prot]] <- p
+  print(p)
+  ggsave(paste0("carpus_only_boxplots_svg/",prot,".svg"),plot=p,device="svg",width=8,height=6)
+}
+```
+
+
+
+
+```{r}
+dir.create("all_fluids_boxplots_svg", showWarnings = FALSE)
+
+proteins.use <- c("F7DMX6", "F7DNT0", "A0A3Q2HWB5", "A0A3Q2H908")
+
+# tab.all doesn't exist yet -- build labels from whichever fluid-specific table has the protein
+get_label <- function(prot) {
+  for (df in list(df_fetlock, df_carpus, df_plasma)) {
+    idx <- match(prot, df$PG.ProteinAccessions)
+    if (!is.na(idx)) return(df$PG.ProteinDescriptions[idx])
+  }
+  prot
+}
+labels <- sapply(proteins.use, get_label)
+names(labels) <- proteins.use
+
+p_to_stars <- function(p) {
+  if (length(p) == 0 || is.na(p)) return("ns")
+  if (p < 0.001) "****"
+  else if (p < 0.01) "***"
+  else if (p < 0.05) "**"
+  else if (p < 0.1) "*"
+  else "ns"
+}
+
+get_pval <- function(df, prot) {
+  idx <- match(prot, df$PG.ProteinAccessions)
+  if (is.na(idx)) NA_real_ else df$P.Value[idx]
+}
+
+fluid.levels <- c("Fetlock", "Carpal", "Plasma")
+dodge.w <- 0.7
+half <- dodge.w / 4
+plots <- list()
+
+for (prot in proteins.use) {
+  plotdat <- pdata
+  plotdat$y <- as.numeric(y.protein$E[prot, ])
+  plotdat$Fluid <- factor(plotdat$Fluid, levels = fluid.levels)
+
+  sig.fetlock <- p_to_stars(get_pval(df_fetlock, prot))
+  sig.carpus  <- p_to_stars(get_pval(df_carpus,  prot))
+  sig.plasma  <- p_to_stars(get_pval(df_plasma,  prot))
+
+  y.range <- diff(range(plotdat$y, na.rm = TRUE))
+  y.pos <- max(plotdat$y, na.rm = TRUE) + 0.08 * y.range
+  tick <- 0.02 * y.range
+
+  x.center <- seq_along(fluid.levels)   # Fetlock=1, Carpal=2, Plasma=3
+  sig.labels <- c(sig.fetlock, sig.carpus, sig.plasma)  # matches fluid.levels order
+
+  bracket.df <- data.frame(x = x.center - half, xend = x.center + half, y = y.pos, yend = y.pos)
+  tickL.df   <- data.frame(x = x.center - half, xend = x.center - half, y = y.pos, yend = y.pos - tick)
+  tickR.df   <- data.frame(x = x.center + half, xend = x.center + half, y = y.pos, yend = y.pos - tick)
+  label.df   <- data.frame(x = x.center, y = y.pos + tick, label = sig.labels)
+
+  p <- ggplot(plotdat, aes(x = Fluid, y = y, fill = `Healthy vs OA`)) +
+    geom_boxplot(width = 0.6, position = position_dodge(width = dodge.w)) +
+    geom_segment(data = bracket.df, aes(x = x, xend = xend, y = y, yend = yend), inherit.aes = FALSE) +
+    geom_segment(data = tickL.df, aes(x = x, xend = xend, y = y, yend = yend), inherit.aes = FALSE) +
+    geom_segment(data = tickR.df, aes(x = x, xend = xend, y = y, yend = yend), inherit.aes = FALSE) +
+    geom_text(data = label.df, aes(x = x, y = y, label = label), inherit.aes = FALSE, size = 6) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) +
+    theme_linedraw() +
+    theme(
+      plot.title = element_text(face = "bold", size = 22),
+      axis.title.x = element_text(size = 19),
+      axis.title.y = element_text(size = 19),
+      axis.text.x = element_text(size = 17),
+      axis.text.y = element_text(size = 17),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.text = element_text(size = 19),      # legend text size
+      legend.title = element_text(size = 19),     # legend title size (if you have one)
+      legend.key.size = unit(1.2, "cm")           # size of the colored key/icon box
+    ) +
+    scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29"))
+
+  plots[[prot]] <- p
+  print(p)
+  ggsave(paste0("all_fluids_boxplots_svg/", prot, ".svg"), plot = p, device = "svg", width = 8, height = 6)
+}
+```
+### OA vs. healthy, carpus
+```{r}
+contrast <- "OA - healthy, carpus"
+####
+tab0 <- topTable(fit, coef = 2, n = Inf)
+tab0$PG.ProteinAccessions <- rownames(tab0)
+tab0 <- select(tab0, -B, -AveExpr)
+tab0 <- select(tab0, PG.ProteinAccessions, NPeptides:adj.P.Val, PG.ProteinDescriptions)
+filename <- gsub(" - ", "_v_", contrast)
+filename <- gsub(", ", "_", filename)
+filename <- paste0(filename, "_SF.txt")
+write.table(tab0, file = filename, quote = FALSE, sep = "\t", row.names = FALSE)
+tab <- kable(head(tab0, 100), digits = 5, row.names = FALSE)
+header1 <- header2 <- header3 <- ncol(tab0)
+names(header1) <- paste0("Top 100 proteins for ", contrast)
+names(header2) <- paste0("Number of proteins with adjusted P < 0.05 = ", length(which(tab0$adj.P.Val < 0.05)))
+names(header3) <- paste0("Output file is ", filename)
+tab <- tab %>% add_header_above(header3, align = 'l') %>% add_header_above(header2, align = 'l') %>% add_header_above(header1, align = 'l', font_size = "larger", bold = T)
+tab %>% kable_styling() %>% scroll_box(height = "500px")
+```
+
+#### Heatmap of top 20 proteins, `r contrast`
+```{r, fig.width =10, fig.height = 8}
+tmp <- as.data.frame(y.protein$E, check.names = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+plotdat <- as.matrix(tmp[proteins.use,])
+rownames <- tab0$PG.ProteinDescriptions[1:20]
+condition.pal <- c("blue4", "orange")
+names(condition.pal) <- c("Healthy", "OA")
+joint.pal <- c("purple", "yellow")
+names(joint.pal) <- c("Carpus", "Fetlock")
+ha <- columnAnnotation(Condition = pdata$`Healthy vs OA`, Joint = pdata$Joint, col = list(Condition = condition.pal, Joint = joint.pal), annotation_name_side = "left")
+ht <- Heatmap(plotdat, bottom_annotation = ha, name = "log2\nNormalized\nExpression", row_labels = rownames, show_column_names = FALSE, row_names_max_width = unit(12, "cm"))
+draw(ht, annotation_legend_side = "bottom")
+```
+
+#### Volcano plot for `r contrast`
+```{r}
+plotdat <- tab0
+plotdat$Category <- "Not significant"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC > 0] <- "Upregulated"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC < 0] <- "Downregulated"
+plotdat$Category <- factor(plotdat$Category, levels = c("Upregulated", "Downregulated", "Not significant"))
+labeldat <- plotdat[1:5,]
+ggplot(plotdat, aes(x = logFC, y = -log10(P.Value), color = Category)) + geom_point(show.legend = F, size = 4) + geom_text_repel(data = labeldat, aes(label = PG.ProteinDescriptions), color = "black") + scale_color_manual(values = c("#0072B5", "#BC3C29", "grey"), breaks = levels(plotdat$Category), drop = FALSE) + labs(title = "Carpus Synovial Fluid") + theme_linedraw() + theme(plot.title = element_text(face = "bold", size = 36), axis.title.x = element_text(size = 30), axis.title.y = element_text(size = 30), legend.title = element_text(size = 20), legend.text = element_text(size = 20), axis.text.x = element_text(size = 28), axis.text.y = element_text(size = 28), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+ggsave("carpus_volcano_plot.svg", width = 8, height = 6)
+```
+
+#### Boxplots of top 20 proteins for `r contrast`
+```{r}
+dir.create("carpus_boxplots_svg", showWarnings = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:6]
+labels <- tab0$PG.ProteinDescriptions[1:6]
+names(labels) <- proteins.use
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  keep <- plotdat$Joint == "Carpus"
+  plotdat <- plotdat[keep, ]
+
+  plotdat$y <- as.numeric(y.protein$E[prot, keep])
+
+  p <- ggplot(plotdat, aes(x = `Healthy vs OA`, y = y, fill = `Healthy vs OA`)) +
+    geom_boxplot(width = 0.3) +
+    labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) +
+    theme_linedraw() +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold", size = 36),
+          axis.title.x = element_text(size = 34),
+          axis.title.y = element_text(size = 32),
+          axis.text.x = element_text(size = 30),
+          axis.text.y = element_text(size = 30),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + stat_compare_means(method = "t.test", label = "p.signif", size = 12)
+ggsave(
+    filename = paste0("carpus_boxplots_svg/", prot, ".svg"),
+    plot = p,
+    device = "svg",
+    width = 8,
+    height = 6
+  )
+})
+```
+
+```{r}
+library(ggsignif)
+
+dir.create("carpus_boxplots_svg", showWarnings = FALSE)
+
+# --- specify your proteins manually here ---
+proteins.use <- c("F7DMX6", "F7DNT0", "A0A3Q2HWB5", "P68255")  # <-- your accessions
+
+# sanity check they exist in tab0 / y.protein
+stopifnot(all(proteins.use %in% tab0$PG.ProteinAccessions))
+stopifnot(all(proteins.use %in% rownames(y.protein$E)))
+
+labels <- tab0$PG.ProteinDescriptions[match(proteins.use, tab0$PG.ProteinAccessions)]
+names(labels) <- proteins.use
+
+p_to_stars <- function(p) {
+  if (is.na(p)) return("ns")
+  if (p < 0.0001) "****"
+  else if (p < 0.001) "***"
+  else if (p < 0.01) "**"
+  else if (p < 0.05) "*"
+  else "ns"
+}
+
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  keep <- plotdat$Joint == "Carpus"
+  plotdat <- plotdat[keep, ]
+
+  plotdat$y <- as.numeric(y.protein$E[prot, keep])
+
+  p.val <- tab0$adj.P.Val[tab0$PG.ProteinAccessions == prot]
+  sig.label <- p_to_stars(p.val)
+
+  y.pos <- max(plotdat$y, na.rm = TRUE) + 0.1 * diff(range(plotdat$y, na.rm = TRUE))
+
+  p <- ggplot(plotdat, aes(x = `Healthy vs OA`, y = y, fill = `Healthy vs OA`)) +
+    geom_boxplot(width = 0.3) +
+    geom_signif(
+      comparisons = list(c("Healthy", "OA")),
+      annotations = sig.label,
+      y_position = y.pos,
+      tip_length = 0.02,
+      textsize = 8
+    ) +
+    labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) +
+    theme_linedraw() +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold", size = 22),
+          axis.title.x = element_text(size = 19),
+          axis.title.y = element_text(size = 19),
+          axis.text.x = element_text(size = 17),
+          axis.text.y = element_text(size = 17),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29"))
+
+  ggsave(
+    filename = paste0("carpus_boxplots_svg/", prot, ".svg"),
+    plot = p,
+    device = "svg",
+    width = 8,
+    height = 6
+  )
+})
+
+
+
+
+```
+### OA vs. healthy, fetlock
+```{r}
+contrast <- "OA - healthy, fetlock"
+contr <- makeContrasts(X.Healthy.vs.OA.OA + X.Healthy.vs.OA.OA.JointFetlock, levels = make.names(colnames(coef(fit))))
+rownames(contr) <- colnames(coef(fit))
+contr2 <- contrasts.fit(fit, contr)
+contr2 <- eBayes(contr2)
+####
+tab0 <- topTable(contr2, n = Inf)
+tab0$PG.ProteinAccessions <- rownames(tab0)
+tab0 <- select(tab0, -B, -AveExpr)
+tab0 <- select(tab0, PG.ProteinAccessions, NPeptides:adj.P.Val, PG.ProteinDescriptions)
+filename <- gsub(" - ", "_v_", contrast)
+filename <- gsub(", ", "_", filename)
+filename <- paste0(filename, "_SF.txt")
+write.table(tab0, file = filename, quote = FALSE, sep = "\t", row.names = FALSE)
+tab <- kable(head(tab0, 100), digits = 5, row.names = FALSE)
+header1 <- header2 <- header3 <- ncol(tab0)
+names(header1) <- paste0("Top 100 proteins for ", contrast)
+names(header2) <- paste0("Number of proteins with adjusted P < 0.05 = ", length(which(tab0$adj.P.Val < 0.05)))
+names(header3) <- paste0("Output file is ", filename)
+tab <- tab %>% add_header_above(header3, align = 'l') %>% add_header_above(header2, align = 'l') %>% add_header_above(header1, align = 'l', font_size = "larger", bold = T)
+tab %>% kable_styling() %>% scroll_box(height = "500px")
+```
+
+#### Heatmap of top 20 proteins, `r contrast`
+```{r, fig.width =10, fig.height = 8}
+tmp <- as.data.frame(y.protein$E, check.names = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+plotdat <- as.matrix(tmp[proteins.use,])
+rownames <- tab0$PG.ProteinDescriptions[1:20]
+condition.pal <- c("blue4", "orange")
+names(condition.pal) <- c("Healthy", "OA")
+joint.pal <- c("purple", "yellow")
+names(joint.pal) <- c("Carpus", "Fetlock")
+ha <- columnAnnotation(Condition = pdata$`Healthy vs OA`, Joint = pdata$Joint, col = list(Condition = condition.pal, Joint = joint.pal), annotation_name_side = "left")
+ht <- Heatmap(plotdat, bottom_annotation = ha, name = "log2\nNormalized\nExpression", row_labels = rownames, show_column_names = FALSE, row_names_max_width = unit(12, "cm"))
+draw(ht, annotation_legend_side = "bottom")
+```
+
+#### Volcano plot for `r contrast`
+```{r}
+plotdat <- tab0
+plotdat$Category <- "Not significant"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC > 0] <- "Upregulated"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC < 0] <- "Downregulated"
+plotdat$Category <- factor(plotdat$Category, levels = c("Upregulated", "Downregulated", "Not significant"))
+labeldat <- plotdat[1:5,]
+ggplot(plotdat, aes(x = logFC, y = -log10(P.Value), color = Category)) + geom_point(show.legend = F, size = 4) + geom_text_repel(data = labeldat, aes(label = PG.ProteinDescriptions), color = "black") + scale_color_manual(values = c("#0072B5", "#BC3C29", "grey"), breaks = levels(plotdat$Category), drop = FALSE) + labs(title = "Fetlock Synovial Fluid") + theme_linedraw() + theme(plot.title = element_text(face = "bold", size = 36), axis.title.x = element_text(size = 30), axis.title.y = element_text(size = 30), legend.title = element_text(size = 20), legend.text = element_text(size = 20), axis.text.x = element_text(size = 28), axis.text.y = element_text(size = 28), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("fetlock_volcano_plot.svg", width = 8, height = 6)
+```
+
+#### Boxplots of top 20 proteins for `r contrast`
+```{r}
+dir.create("fetlock_boxplots_svg", showWarnings = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:4]
+labels <- tab0$PG.ProteinDescriptions[1:4]
+names(labels) <- proteins.use
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  keep <- plotdat$Joint == "Fetlock"
+  plotdat <- plotdat[keep, ]
+
+  plotdat$y <- as.numeric(y.protein$E[prot, keep])
+
+  p <- ggplot(plotdat, aes(x = `Healthy vs OA`, y = y, fill = `Healthy vs OA`)) +
+    geom_boxplot(width = 0.3) +
+    labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) +
+    theme_linedraw() +
+    theme(legend.position = "none", plot.title = element_text(face = "bold", size = 36), axis.title.x = element_text(size = 34), axis.title.y = element_text(size = 32), axis.text.x = element_text(size = 30), axis.text.y = element_text(size = 30), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_fill_manual(values = c("Healthy" = "#0072B5", "OA" = "#BC3C29")) + stat_compare_means(method = "t.test", label = "p.signif", size = 12)
+ggsave(
+    filename = paste0("fetlock_boxplots_svg/", prot, ".svg"),
+    plot = p,
+    device = "svg",
+    width = 8,
+    height = 6
+  )
+})
+```
+
+### Fetlock vs. carpus, healthy
+```{r}
+contrast <- "fetlock - carpus, healthy"
+contr <- makeContrasts(JointFetlock, levels = make.names(colnames(coef(fit))))
+rownames(contr) <- colnames(coef(fit))
+contr2 <- contrasts.fit(fit, contr)
+contr2 <- eBayes(contr2)
+####
+tab0 <- topTable(contr2, n = Inf, sort.by = "P")
+tab0$PG.ProteinAccessions <- rownames(tab0)
+tab0 <- select(tab0, -B, -AveExpr)
+tab0 <- select(tab0, PG.ProteinAccessions, NPeptides:adj.P.Val, PG.ProteinDescriptions)
+filename <- gsub(" - ", "_v_", contrast)
+filename <- gsub(", ", "_", filename)
+filename <- paste0(filename, "_SF.txt")
+write.table(tab0, file = filename, quote = FALSE, sep = "\t", row.names = FALSE)
+tab <- kable(head(tab0, 100), digits = 5, row.names = FALSE)
+header1 <- header2 <- header3 <- ncol(tab0)
+names(header1) <- paste0("Top 100 proteins for ", contrast)
+names(header2) <- paste0("Number of proteins with adjusted P < 0.05 = ", length(which(tab0$adj.P.Val < 0.05)))
+names(header3) <- paste0("Output file is ", filename)
+tab <- tab %>% add_header_above(header3, align = 'l') %>% add_header_above(header2, align = 'l') %>% add_header_above(header1, align = 'l', font_size = "larger", bold = T)
+tab %>% kable_styling() %>% scroll_box(height = "500px")
+```
+
+#### Heatmap of top 20 proteins, `r contrast`
+```{r, fig.width =10, fig.height = 8}
+tmp <- as.data.frame(y.protein$E, check.names = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+plotdat <- as.matrix(tmp[proteins.use,])
+rownames <- tab0$PG.ProteinDescriptions[1:20]
+condition.pal <- c("blue4", "orange")
+names(condition.pal) <- c("Healthy", "OA")
+joint.pal <- c("purple", "yellow")
+names(joint.pal) <- c("Carpus", "Fetlock")
+ha <- columnAnnotation(Condition = pdata$`Healthy vs OA`, Joint = pdata$Joint, col = list(Condition = condition.pal, Joint = joint.pal), annotation_name_side = "left")
+ht <- Heatmap(plotdat, bottom_annotation = ha, name = "log2\nNormalized\nExpression", row_labels = rownames, show_column_names = FALSE, row_names_max_width = unit(12, "cm"))
+draw(ht, annotation_legend_side = "bottom")
+```
+
+#### Volcano plot for `r contrast`
+```{r}
+plotdat <- tab0
+plotdat$Category <- "Not significant"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC > 0] <- "Upregulated"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC < 0] <- "Downregulated"
+plotdat$Category <- factor(plotdat$Category, levels = c("Upregulated", "Downregulated", "Not significant"))
+labeldat <- plotdat[1:5,]
+ggplot(plotdat, aes(x = logFC, y = -log10(P.Value), color = Category)) + geom_point(show.legend = TRUE) + geom_text_repel(data = labeldat, aes(label = PG.ProteinDescriptions), color = "black") + scale_color_manual(values = c("blue", "red", "grey"), breaks = levels(plotdat$Category), drop = FALSE) + labs(color = NULL) + theme_linedraw() + theme(plot.title = element_text(face = "bold", size = 17), axis.title.x = element_text(size = 14), axis.title.y = element_text(size = 14), legend.title = element_text(size = 14), legend.text = element_text(size = 13), axis.text.x = element_text(size = 13), axis.text.y = element_text(size = 13))
+```
+
+#### Boxplots of top 20 proteins for `r contrast`
+```{r}
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+labels <- tab0$PG.ProteinDescriptions[1:20]
+names(labels) <- proteins.use
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  plotdat$y <- as.numeric(y.protein$E[prot,])
+  p <- ggplot(plotdat, aes(x = Joint, y = y, fill = `Healthy vs OA`)) + geom_boxplot() + labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) + theme_bw()
+  print(p)
+})
+```
+
+### Fetlock vs. carpus, OA
+```{r}
+contrast <- "fetlock - carpus, OA"
+contr <- makeContrasts(JointFetlock + X.Healthy.vs.OA.OA.JointFetlock, levels = make.names(colnames(coef(fit))))
+rownames(contr) <- colnames(coef(fit))
+contr2 <- contrasts.fit(fit, contr)
+contr2 <- eBayes(contr2)
+####
+tab0 <- topTable(contr2, n = Inf, sort.by = "P")
+tab0$PG.ProteinAccessions <- rownames(tab0)
+tab0 <- select(tab0, -B, -AveExpr)
+tab0 <- select(tab0, PG.ProteinAccessions, NPeptides:adj.P.Val, PG.ProteinDescriptions)
+filename <- gsub(" - ", "_v_", contrast)
+filename <- gsub(", ", "_", filename)
+filename <- paste0(filename, "_SF.txt")
+write.table(tab0, file = filename, quote = FALSE, sep = "\t", row.names = FALSE)
+tab <- kable(head(tab0, 100), digits = 5, row.names = FALSE)
+header1 <- header2 <- header3 <- ncol(tab0)
+names(header1) <- paste0("Top 100 proteins for ", contrast)
+names(header2) <- paste0("Number of proteins with adjusted P < 0.05 = ", length(which(tab0$adj.P.Val < 0.05)))
+names(header3) <- paste0("Output file is ", filename)
+tab <- tab %>% add_header_above(header3, align = 'l') %>% add_header_above(header2, align = 'l') %>% add_header_above(header1, align = 'l', font_size = "larger", bold = T)
+tab %>% kable_styling() %>% scroll_box(height = "500px")
+```
+
+#### Heatmap of top 20 proteins, `r contrast`
+```{r, fig.width =10, fig.height = 8}
+tmp <- as.data.frame(y.protein$E, check.names = FALSE)
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+plotdat <- as.matrix(tmp[proteins.use,])
+rownames <- tab0$PG.ProteinDescriptions[1:20]
+condition.pal <- c("blue4", "orange")
+names(condition.pal) <- c("Healthy", "OA")
+joint.pal <- c("purple", "yellow")
+names(joint.pal) <- c("Carpus", "Fetlock")
+ha <- columnAnnotation(Condition = pdata$`Healthy vs OA`, Joint = pdata$Joint, col = list(Condition = condition.pal, Joint = joint.pal), annotation_name_side = "left")
+ht <- Heatmap(plotdat, bottom_annotation = ha, name = "log2\nNormalized\nExpression", row_labels = rownames, show_column_names = FALSE, row_names_max_width = unit(12, "cm"))
+draw(ht, annotation_legend_side = "bottom")
+```
+
+#### Volcano plot for `r contrast`
+```{r}
+plotdat <- tab0
+plotdat$Category <- "Not significant"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC > 0] <- "Upregulated"
+plotdat$Category[plotdat$adj.P.Val < 0.05 & plotdat$logFC < 0] <- "Downregulated"
+plotdat$Category <- factor(plotdat$Category, levels = c("Upregulated", "Downregulated", "Not significant"))
+labeldat <- plotdat[1:5,]
+ggplot(plotdat, aes(x = logFC, y = -log10(P.Value), color = Category)) + geom_point(show.legend = TRUE) + geom_text_repel(data = labeldat, aes(label = PG.ProteinDescriptions), color = "black") + scale_color_manual(values = c("blue", "red", "grey"), breaks = levels(plotdat$Category), drop = FALSE) + labs(color = NULL) + theme_bw()
+```
+
+#### Boxplots of top 20 proteins for `r contrast`
+```{r}
+proteins.use <- tab0$PG.ProteinAccessions[1:20]
+labels <- tab0$PG.ProteinDescriptions[1:20]
+names(labels) <- proteins.use
+tmp <- sapply(proteins.use, function(prot){
+  plotdat <- pdata
+  plotdat$y <- as.numeric(y.protein$E[prot,])
+  p <- ggplot(plotdat, aes(x = Joint, y = y, fill = `Healthy vs OA`)) + geom_boxplot() + labs(x = NULL, y = "log2 Normalized Expression", title = labels[prot], fill = NULL) + theme_bw()
+  print(p)
+})
+```
+
+## Paired synovial fluid and plasma comparison
+
+The following section reloads the metadata and peptide-level data to perform the paired-fluid comparison.
+
+```{r}
+# Read metadata
+pdata <- as.data.frame(read_excel(pdata.file))
+
+pdata$Joint <- ifelse(pdata$Joint == "Feltock", "Fetlock", pdata$Joint)
+pdata$`Proteomics Batch` <- factor(pdata$`Proteomics Batch`)
+
+# keep only fetlock and plasma, remove carpus
+pdata2 <- subset(pdata, Fluid != "Carpal")
+
+pdata2$Group <- interaction(pdata2$`Healthy vs OA`, pdata2$Fluid)
+
+```
+
+```{r}
+# read peptide data
+y.peptide <- readSpectronaut(
+  file = file.use,
+  run.column = "R.FileName",
+  extra.columns = c("PG.ProteinAccessions", "PG.ProteinDescriptions"),
+  q.cutoffs = rep(0.01, 2)
+)
+
+sample.names <- sapply(strsplit(colnames(y.peptide), "_"), `[`, 4)
+colnames(y.peptide) <- sample.names
+
+# align to filtered metadata
+y.peptide <- y.peptide[, as.character(pdata2$`Proteomics Tube #`)]
+```
+
+
+```{r}
+y.peptide <- filterCompoundProteins(y.peptide, protein.group = "PG.ProteinAccessions")
+y.peptide <- filterSingletonPeptides(y.peptide, min.n.peptides = 2, protein.group = "PG.ProteinAccessions")
+
+dpcfit <- dpc(y.peptide)
+y.protein <- dpcQuant(y.peptide, "PG.ProteinAccessions", dpc = dpcfit)
+```
+
+```{r}
+drop <- grep("Cont_", rownames(y.protein))
+y.protein <- y.protein[-drop, ]
+```
+
+```{r}
+coords <- plotMDSUsingSEs(y.protein, plot = FALSE)
+
+plotdat <- pdata2
+plotdat$mds1 <- coords$x
+plotdat$mds2 <- coords$y
+```
+
+```{r}
+plotdat <- plotdat %>%
+  group_by(MRN) %>%
+  filter(n_distinct(Fluid) == 2) %>%
+  ungroup()
+```
+
+```{r}
+line_data <- plotdat %>%
+  select(MRN, Fluid, mds1, mds2) %>%
+  tidyr::pivot_wider(
+    names_from = Fluid,
+    values_from = c(mds1, mds2)
+  )
+```
+
+```{r}
+ggplot() +
+
+  geom_segment(
+    data = line_data,
+    aes(x = mds1_Fetlock, y = mds2_Fetlock,
+        xend = mds1_Plasma, yend = mds2_Plasma,
+        group = MRN),
+    color = "grey70"
+  ) +
+
+  stat_ellipse(
+    data = plotdat,
+    aes(x = mds1, y = mds2,
+        color = Fluid,
+        group = Fluid, fill = Fluid),
+    geom = "polygon",
+    alpha = 0.2,
+    linewidth = 1
+  ) +
+
+  geom_point(
+    data = plotdat,
+    aes(x = mds1, y = mds2,
+        shape = `Healthy vs OA`, fill = Fluid),
+    color = "black",
+    size = 3.5
+  ) +
+
+  theme_linedraw() +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size = 15),
+    plot.title = element_text(face = "bold", size = 30),
+    axis.title.x = element_text(size = 26),
+    axis.title.y = element_text(size = 26),
+    axis.text.x = element_text(size = 24),
+    axis.text.y = element_text(size = 24),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    text = element_text(family = "Arial"),
+    legend.position = "none"
+  ) +
+  scale_color_manual(values = c("Fetlock" = "forestgreen", "Plasma" = "violetred3")) +
+  scale_fill_manual(values = c("Fetlock" = "forestgreen", "Plasma" = "violetred3")) +
+  scale_shape_manual(values = c("Healthy"= 21, 'OA' = 24)) +
+  guides(
+  fill = guide_legend(
+    override.aes = list(
+      shape = 21,
+      color = NA
+    )
+  ),
+  shape = guide_legend(
+    override.aes = list(
+      fill = "black"
+    )
+  )
+) +
+  labs(title = "Paired Synovial Fluid & Plasma", x= "MDS dim 1", y = "MDS dim 2")
+ggsave("paired_mds.svg", width = 8, height = 6, device = "svg")
+```
+
+
+#### R session information
+```{r}
+sessionInfo()
+```
